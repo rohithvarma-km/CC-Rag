@@ -71,3 +71,4 @@ def test_chat_error_event(client, monkeypatch):
     monkeypatch.setattr(openai_responses, "stream_response", boom)
     r = client.post("/threads/t1/chat", json={"message": "hi"}, headers={"Authorization": "Bearer good"})
     assert '"type": "error"' in r.text
+    assert db.writes == []  # no orphan user message on failure

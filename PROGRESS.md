@@ -21,16 +21,11 @@ Track your progress through the masterclass. Update this file as you complete mo
   - LangSmith traces confirmed in project `agentic-rag` (chat_turn + LLM run with file_search, tokens, user/thread metadata)
   - Fixed during validation: `.env` was not exported to `os.environ`, so LangSmith tracing was silently off (`load_dotenv()` in `app/config.py`)
 - [x] Browser walkthrough of the UI done manually by the user: sign up/in, session persistence, streamed grounded chat with citations, follow-up memory, history after reload, sign out, per-user isolation, thread delete all work
-- [ ] Cleanup: delete the `rlstest-*` users in Supabase (Authentication → Users)
-- Known gap: a failed OpenAI call leaves the user message saved without an assistant reply
+- [x] Alternate-flow browser tests with Playwright (2026-11-12): wrong password, duplicate sign-up, logged-out redirect to `/login`, failed chat turn (invalid model), deleting the active thread, second user sees empty sidebar - all pass
+- [x] Fixed: orphan user message on failed OpenAI call (messages are now persisted only after a successful response; frontend rolls back optimistic bubbles and restores the input; test added)
+- [x] Fixed: stale auth error persisted when toggling sign in / sign up
+- [ ] Cleanup (manual, needs Supabase dashboard): delete the `rlstest-*` users (Authentication -> Users), including `rlstest-a1@example.com` and `rlstest-b1@example.com` created during browser tests
 
 ## Current status / next steps (2026-11-12)
-- Module 1 is functionally complete and manually verified. Services run via `scripts/start-services.sh` (documented in CLAUDE.md "Running the app").
-- Playwright MCP was added (`claude mcp add playwright -- npx @playwright/mcp@latest`); requires a Claude Code restart before its tools are available.
-- **Next:** run the alternate-flow browser tests with Playwright:
-  - wrong password and duplicate sign-up errors
-  - visiting `/` while logged out redirects to `/login`
-  - failed chat turn (temporarily set an invalid `OPENAI_MODEL`) – check error shown in UI and that no orphan user message remains
-  - deleting the active thread
-  - second user sees an empty sidebar
-- Then: fix the known gap (orphan user message on failed OpenAI call), delete `rlstest-*` users in Supabase, and move on to Module 2 planning.
+- Module 1 is complete and validated, including alternate flows. Services run via `scripts/start-services.sh` (see CLAUDE.md "Running the app").
+- **Next:** delete the `rlstest-*` users in Supabase, then plan Module 2 (Chat Completions + OpenRouter, own retrieval, ingestion).

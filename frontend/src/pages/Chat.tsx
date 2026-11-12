@@ -42,16 +42,22 @@ export default function Chat() {
     if (!id) { id = (await createThread()).id; setActive(id) }
     setInput(''); setError(''); setStreaming(true)
     setMessages((m) => [...m, { id: crypto.randomUUID(), role: 'user', content: text }, { id: 'pending', role: 'assistant', content: '' }])
+    // The server persists nothing on failure, so roll back the optimistic bubbles and restore the text.
+    const rollback = (msg: string) => {
+      setMessages((m) => m.slice(0, -2))
+      setInput(text)
+      setError(msg)
+    }
     try {
       await streamChat(id, text, (ev) => {
         if (ev.type === 'delta')
           setMessages((m) => m.map((x) => (x.id === 'pending' ? { ...x, content: x.content + ev.text } : x)))
         else if (ev.type === 'done')
           setMessages((m) => m.map((x) => (x.id === 'pending' ? { ...x, id: crypto.randomUUID(), citations: ev.citations } : x)))
-        else setError(ev.message)
+        else rollback(ev.message)
       })
     } catch (err) {
-      setError(String(err))
+      rollback(String(err))
     } finally {
       setStreaming(false)
       refresh()

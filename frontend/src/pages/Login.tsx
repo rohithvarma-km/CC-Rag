@@ -32,7 +32,7 @@ export default function Login() {
         {error && <p className="text-sm text-red-600">{error}</p>}
         {info && <p className="text-sm text-green-700">{info}</p>}
         <Button type="submit" className="w-full" disabled={busy}>{mode === 'in' ? 'Sign in' : 'Sign up'}</Button>
-        <button type="button" className="text-sm underline" onClick={() => setMode(mode === 'in' ? 'up' : 'in')}>
+        <button type="button" className="text-sm underline" onClick={() => { setMode(mode === 'in' ? 'up' : 'in'); setError(''); setInfo('') }}>
           {mode === 'in' ? 'Need an account? Sign up' : 'Have an account? Sign in'}
         </button>
       </form>

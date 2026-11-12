@@ -22,9 +22,8 @@ def sse(data: dict) -> str:
 @traceable(name="chat_turn", run_type="chain")
 async def run_chat(db, user_id: str, thread_id: str, message: str, thread: dict):
     """Async generator of SSE strings. Metadata (no secrets) attached via the trace."""
-    db.table("messages").insert(
-        {"thread_id": thread_id, "user_id": user_id, "role": "user", "content": message}
-    ).execute()
+    # Nothing is persisted until the model responds successfully, so a failed
+    # call leaves no orphan user message behind.
     title = thread["title"]
     if title == "New chat":
         title = message[:60]
@@ -36,6 +35,9 @@ async def run_chat(db, user_id: str, thread_id: str, message: str, thread: dict)
                 full += ev["text"]
                 yield sse(ev)
             else:
+                db.table("messages").insert(
+                    {"thread_id": thread_id, "user_id": user_id, "role": "user", "content": message}
+                ).execute()
                 db.table("messages").insert(
                     {
                         "thread_id": thread_id,
