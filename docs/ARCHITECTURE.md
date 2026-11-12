@@ -95,7 +95,7 @@ All tables (`threads`, `messages`, `documents`, `chunks`) have RLS with `<table>
 Memory is entirely ours. Every message is stored in `messages`; each turn we resend a bounded window (see section 5). Nothing depends on the model provider retaining state, so old threads keep working and you can switch models freely. A new thread starts empty. Per user and per thread, enforced by RLS.
 
 ## 9. Observability
-LangSmith records one `chat_turn` trace per message with nested `embed_query`, `retrieve`, `execute_tool` and the LLM calls (tool calls visible), tagged with `user_id` and `thread_id`. Ingestion is a separate `ingest_document` trace. Metadata holds ids only, but the LLM and retrieval spans contain prompt and chunk text.
+LangSmith records one `chat_turn` trace per message with nested `embed_query`, `retrieve`, `execute_tool` and the LLM calls (tool calls visible), tagged with `user_id` and `thread_id`. Ingestion is a separate `ingest_document` trace. This structure was verified in the LangSmith UI. Metadata holds ids only, but the LLM and retrieval spans contain prompt and chunk text.
 
 ## 10. Limits and what comes next
 **Known limitations in 0.2:**
@@ -104,6 +104,5 @@ LangSmith records one `chat_turn` trace per message with nested `embed_query`, `
 - `RETRIEVAL_MIN_SIMILARITY` (0.25) is not yet tuned; sample scores on real documents were 0.50-0.59.
 - Composer text and an in-flight stream are lost when navigating Chat -> Documents -> Chat.
 - The Documents page has no `<main>` landmark (a11y nit).
-- The LangSmith trace structure described in section 9 has not yet been checked in the LangSmith UI.
 
 **Scope:** Only `.txt` and `.md`, at most 5 MB. The embedding dimension is locked to `vector(768)` (changing it needs a migration and re-ingest). No deduplication (Module 3), metadata filtering (4), PDF/DOCX/HTML (5), hybrid search or reranking (6).
