@@ -24,7 +24,7 @@ def list_messages(thread_id: str, user: CurrentUser = Depends(get_current_user))
     db = user_client(user)
     if not db.table("threads").select("id").eq("id", thread_id).execute().data:
         raise HTTPException(404, "Thread not found")
-    r = db.table("messages").select("id,role,content,created_at").eq("thread_id", thread_id).order("created_at").execute()
+    r = db.table("messages").select("id,role,content,citations,created_at").eq("thread_id", thread_id).order("created_at").execute()
     return r.data
 
 

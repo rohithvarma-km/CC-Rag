@@ -4,7 +4,18 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>Agentic RAG</title>
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      (function () {
+        try {
+          var mq = window.matchMedia('(prefers-color-scheme: dark)');
+          var apply = function () { document.documentElement.classList.toggle('dark', mq.matches); };
+          apply();
+          mq.addEventListener('change', apply);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

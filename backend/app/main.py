@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import CurrentUser, get_current_user
 from app.config import get_settings
-from app.routers import chat, threads
+from app.routers import chat, documents, threads
 
 app = FastAPI(title="Agentic RAG")
 app.add_middleware(
@@ -14,6 +14,7 @@ app.add_middleware(
 )
 app.include_router(threads.router)
 app.include_router(chat.router)
+app.include_router(documents.router)
 
 
 @app.get("/health")

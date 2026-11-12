@@ -3,6 +3,7 @@ uvicorn[standard]
 openai
 langsmith
 pydantic-settings
+python-dotenv
 supabase
 pyjwt[crypto]
 httpx

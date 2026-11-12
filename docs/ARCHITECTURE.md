@@ -1,74 +1,109 @@
-# Module 1: What We Built (Plain English)
+# Module 2: How It Works (Plain English)
+
+_Release 0.2. Covers BYO retrieval + memory: own ingestion pipeline, pgvector search, tool-calling chat over stateless completions._
 
 ## 1. The idea in one paragraph
-A chat website where you sign up, log in, and talk to an AI. The AI can look up facts in documents you put in an OpenAI "vector store" and answer using them (that is the "RAG" part: Retrieval-Augmented Generation). Every user has their own private chat threads. Every chat is traced in LangSmith so you can see what the AI did.
+A chat website where you sign up, log in, upload your own text documents, and talk to an AI that looks things up in them (RAG: Retrieval-Augmented Generation). We own the whole pipeline: file storage, chunking, embeddings, vector search, and the conversation memory. The model is reached through the standard OpenAI-compatible Chat Completions API (default: local Ollama), so you can swap providers with environment variables. Every user's documents and chats are private to them (Row-Level Security). Every turn is traced in LangSmith.
 
-## 2. The pieces (architecture)
+## 2. The pieces
 
 ```
  Browser (React + Vite + Tailwind + shadcn/ui)
-   |  1. login with email/password  --------------------> Supabase Auth
-   |  2. gets a token (JWT) back  <------------------------+
-   |  3. every request: "Authorization: Bearer <token>"
+   |  login ---------------------------------------------> Supabase Auth  (returns a JWT)
+   |  upload file directly ------------------------------> Supabase Storage (private bucket)
+   |  watch document status <----------------------------- Supabase Realtime
+   |  every API call: "Authorization: Bearer <JWT>"
    v
- Backend (Python FastAPI)
-   |  - checks the token with Supabase Auth
-   |  - reads/writes threads + messages in Supabase Postgres AS THE USER
-   |      (so Row-Level Security limits them to their own rows)
-   |  - calls OpenAI Responses API (with file_search tool)
-   |  - streams the answer back to the browser using SSE
-   |  - sends a trace of the whole turn to LangSmith
+ Backend (Python FastAPI)  -- acts AS THE USER (their JWT), so RLS applies everywhere
+   |  /documents      create row, trigger ingestion, delete
+   |  /threads        threads + messages (with citations)
+   |  /threads/{id}/chat   tool-calling loop, streamed over SSE
    v
- OpenAI                      Supabase Postgres              LangSmith
- - the model (gpt-4.1-mini)  - threads table                - traces: inputs, output,
- - vector store (documents)  - messages table                 latency, tokens, tool calls
- - stored responses (memory) - RLS on both tables
+ Model provider (OpenAI-compatible)     Supabase Postgres + pgvector        LangSmith
+ - chat model (tool calling)            - threads, messages                 - chat_turn, ingest_document
+ - embedding model                      - documents, chunks (vector(768))     traces incl. prompts and
+ default: Ollama on localhost:11434     - match_chunks() search function      retrieved chunk text
 ```
 
-Rules we followed: no LangChain/LangGraph (raw SDK calls only), RLS on every table, chat streamed over SSE, Python in a venv.
+**Frontend layout:** `AppLayout` provides one shared sidebar (wordmark, New chat, Chat/Documents nav, thread list, profile block with name, email and sign out) around both pages. Chat shows citation chips (filename + similarity, expandable snippet) and a "Searching documents..." indicator; Documents has drag-and-drop upload, live status badges, Retry and Delete. The theme is warm cream/terracotta with serif headings and follows the OS dark mode setting.
 
-## 3. Step-by-step: what happens when you send a message
+Rules: no LangChain/LangGraph (raw SDK calls), RLS on every table, chat streamed over SSE, Python in a venv, ingestion is manual file upload only.
 
-1. **Sign in.** The React app signs you in through Supabase Auth and keeps the session (token) in the browser. Refreshing the page keeps you logged in.
-2. **You type a message** in a thread. The frontend POSTs to `/threads/{id}/chat` with your token.
-3. **Backend checks who you are.** It asks Supabase "is this token valid?" and gets your user id.
-4. **Backend loads your thread** using a Supabase client that carries *your* token. Postgres RLS means you can only ever see your own thread; someone else's thread id gives a 404.
-5. **Your message is saved** to the `messages` table first.
-6. **Backend calls OpenAI** (`responses.create`, streaming) with your message, the thread's `openai_last_response_id` (this is the memory), and the `file_search` tool pointing at your vector store.
-7. **OpenAI retrieves and answers.** If the model decides it needs documents, it searches the vector store, reads the best passages, and writes an answer using them.
-8. **Words stream back.** Each piece of text is forwarded to the browser as an SSE event, so the answer appears as it is generated.
-9. **When finished,** the backend saves the assistant's full answer to `messages`, stores the new OpenAI response id on the thread, sets the title (first 60 characters of your first message), and sends a final event with the cited file names.
-10. **LangSmith** records the whole turn (tagged with user_id and thread_id, no secrets).
+## 3. Ingestion: from file to searchable chunks
 
-## 4. Where is the data stored?
+1. **Create.** The browser checks the file (`.txt` / `.md`, at most 5 MB) and calls `POST /documents {filename, size_bytes}`. The backend validates again and inserts a `documents` row with status `pending` and `storage_path = {user_id}/{document_id}`.
+2. **Upload.** The browser uploads the file straight to the private `documents` bucket in Supabase Storage (storage policies only allow your own `{user_id}/` folder). If the upload fails the browser calls `DELETE /documents/{id}`.
+3. **Ingest.** `POST /documents/{id}/ingest` atomically claims the document and returns 202. The work then runs as a FastAPI background task using the user's JWT (no service-role key).
+4. **Process.** Download from Storage, decode as UTF-8 (BOM tolerated, NUL bytes stripped, empty file is an error), delete any old chunks, split into chunks, embed them in batches, insert into `chunks` in batches of 100.
+5. **Finish.** Status becomes `completed` with `chunk_count`. Any error deletes that document's chunks and sets `failed` with a short, user-safe `error` message (for example "Cannot reach model provider at ...").
+
+**State machine:** `pending -> processing -> completed | failed`. `failed -> processing` on Retry. A document stuck in `processing` for more than 10 minutes (for example the server restarted) can be claimed again. A fresh `processing` document cannot, so double clicks return 409.
+
+**Chunking:** a hand-written recursive splitter (paragraph, line, sentence, word, then hard split) with overlap. Defaults: 1000 characters, 200 overlap. `CHUNK_SIZE` is capped at 1500 characters so a chunk always fits the embedding model's context.
+
+**Embeddings:** `POST {EMBEDDING_BASE_URL}/embeddings` in batches of `EMBEDDING_BATCH_SIZE`, optional document/query prefixes, and a check that each vector has `EMBEDDING_DIM` (768) numbers.
+
+**Realtime status:** `documents` is in the `supabase_realtime` publication (replica identity full). The Documents page subscribes to changes filtered by your user id and refetches on (re)subscribe, so badges flip live without a refresh.
+
+## 4. Retrieval
+
+`match_chunks(query_embedding vector(768), match_count, min_similarity)` is a Postgres SQL function declared `security invoker`, so RLS applies and you only ever search your own chunks. It uses cosine similarity (`1 - (embedding <=> query)`), only considers chunks of `completed` documents, drops anything below `min_similarity` (default 0.25), returns at most 10 rows, and is backed by an HNSW index (`vector_cosine_ops`).
+
+## 5. Chat: a tool-calling loop over stateless completions
+
+The model is not given the documents. It is given a `search_documents` tool (arguments `query`, `top_k`, defined by a Pydantic model) and decides when to use it. The provider keeps no memory; we send everything each turn.
+
+For each `POST /threads/{id}/chat`:
+
+1. **Auth and ownership.** Validate the JWT, load the thread as the user (someone else's thread id is a 404).
+2. **History window.** Load the last `HISTORY_MAX_MESSAGES` (20) stored messages, drop the oldest until under `HISTORY_MAX_CHARS` (24000), and make sure the window starts on a user turn. This is read BEFORE the new turn is saved. Tool messages are not stored, so a later turn may simply search again.
+3. **Build the request:** system prompt + history + your new message.
+4. **Loop** (up to `MAX_TOOL_ITERATIONS`, default 3): call Chat Completions with streaming. Text deltas are forwarded to the browser immediately. Tool-call fragments are reassembled (tolerating missing indexes and arguments split across chunks). If the model asked for `search_documents`, we embed the query, call `match_chunks`, append a `tool` message with the passages, and loop. On the last iteration `tool_choice="none"` forces a plain answer. Bad tool arguments or unknown tools are returned to the model as an error message instead of crashing the turn.
+5. **Citations.** Every chunk returned by the turn's searches is kept (deduplicated by document and chunk) as `{document_id, filename, chunk_index, snippet (240 chars), similarity}`.
+6. **Persist after success.** Only when the model finished without error are the user message and the assistant message (with `citations`, stored in `messages.citations`) written, and the thread title set (first 60 characters of the first message). A failed call leaves no orphan user message.
+
+**SSE events** (`data: {json}` lines):
+
+| Event | Meaning |
+|---|---|
+| `{"type":"tool","name":"search_documents"}` | The model is searching; UI shows "Searching documents..." |
+| `{"type":"delta","text":"..."}` | A piece of the answer |
+| `{"type":"done","citations":[...],"title":"..."}` | Finished and saved |
+| `{"type":"error","message":"..."}` | Something failed; nothing was saved |
+
+`GET /threads/{id}/messages` returns stored messages including their citations, so chips survive a reload. Deleting a document removes the Storage object first (a 502 keeps the row if Storage fails), then the row, which cascades to its chunks.
+
+## 6. Where is the data stored?
 
 | Data | Where |
 |---|---|
 | Accounts, passwords, sessions | Supabase Auth |
-| Threads and chat messages (what you see in the UI) | Supabase Postgres: `threads`, `messages` (RLS: only the owner can see/change rows) |
-| Your documents, their chunks and embeddings | OpenAI vector store (managed by OpenAI, not in our database) |
-| The conversation context the model actually uses | OpenAI stored responses, linked by id |
+| Original files | Supabase Storage, private bucket `documents`, path `{user_id}/{document_id}` |
+| Chunk text and 768-dim embeddings | Supabase Postgres: `chunks` (pgvector) |
+| Document metadata and ingestion status | Supabase Postgres: `documents` |
+| Threads, messages, citations (also the model's memory) | Supabase Postgres: `threads`, `messages` |
 | Traces / monitoring | LangSmith |
 | Secrets (API keys) | `.env` files, never committed |
 
-Important: the vector store is ONE store, set by `OPENAI_VECTOR_STORE_ID`. Every signed-in user searches the same documents. Chat history is private per user; the documents are shared. Per-user documents come in Module 2.
+Local models do not mean local data: Ollama only runs inference. Documents and chunks sit in your cloud Supabase project, and LangSmith traces contain prompts and retrieved chunk text (set `LANGSMITH_TRACING=false` to turn tracing off).
 
-## 5. How is it chunked?
-We do NOT chunk anything ourselves in Module 1. When you upload files to the OpenAI vector store, OpenAI splits them into chunks and creates embeddings automatically. By default it uses chunks of about 800 tokens with about 400 tokens of overlap (so a sentence at a boundary isn't lost). You can change this only when attaching files to the store; our code doesn't touch it.
+## 7. Row-Level Security
 
-## 6. How is it retrieved?
-Also handled by OpenAI. We only attach the `file_search` tool. When the model decides a question needs your documents, OpenAI turns the question into an embedding, finds the most similar chunks in the vector store, and gives them to the model. The answer carries annotations naming the source files, which we surface as citations. We do not control ranking, top-k or hybrid search here.
+All tables (`threads`, `messages`, `documents`, `chunks`) have RLS with `<table>_<cmd>_own` policies: you can only see and change rows where `user_id = auth.uid()`. Chunk inserts must also point at a document you own. `match_chunks` is `security invoker`, so search is filtered the same way. Storage policies on `storage.objects` limit the `documents` bucket to the folder named after your user id. The backend never uses a service-role key; it builds a Supabase client per request carrying the caller's JWT.
 
-## 7. How does it remember each user's conversation?
-Two separate things:
-- **For display:** every message is saved in Supabase `messages`, tied to the thread and user. That is what you see when you reload.
-- **For the AI's memory:** each OpenAI response has an id. We store the latest one in `threads.openai_last_response_id`. On the next message we send it as `previous_response_id`, and OpenAI supplies the earlier conversation to the model itself. We never resend the history.
+## 8. Memory
+Memory is entirely ours. Every message is stored in `messages`; each turn we resend a bounded window (see section 5). Nothing depends on the model provider retaining state, so old threads keep working and you can switch models freely. A new thread starts empty. Per user and per thread, enforced by RLS.
 
-Because the id is stored per thread and threads belong to one user, memory is per user and per thread. A new thread starts with no memory.
-Caveat: this relies on OpenAI keeping responses (they are stored for a limited time, roughly 30 days by default). Very old threads may display fine but lose model memory. Module 2 fixes this by storing and sending history ourselves (stateless completions).
+## 9. Observability
+LangSmith records one `chat_turn` trace per message with nested `embed_query`, `retrieve`, `execute_tool` and the LLM calls (tool calls visible), tagged with `user_id` and `thread_id`. Ingestion is a separate `ingest_document` trace. Metadata holds ids only, but the LLM and retrieval spans contain prompt and chunk text.
 
-## 8. What Module 2 will change
-`services/openai_responses.py` and the `openai_last_response_id` column get replaced: our own file upload, our own chunking, embeddings in pgvector, per-user documents, history sent by us, OpenRouter models, and Realtime ingestion status.
+## 10. Limits and what comes next
+**Known limitations in 0.2:**
+- Cold start: Ollama unloads models after 5 minutes idle, so the first turn takes about 11-12 s (set `OLLAMA_KEEP_ALIVE`); warm turns take about 2-6 s.
+- The assistant refuses general-knowledge questions by design (system prompt in `services/agent.py`).
+- `RETRIEVAL_MIN_SIMILARITY` (0.25) is not yet tuned; sample scores on real documents were 0.50-0.59.
+- Composer text and an in-flight stream are lost when navigating Chat -> Documents -> Chat.
+- The Documents page has no `<main>` landmark (a11y nit).
+- The LangSmith trace structure described in section 9 has not yet been checked in the LangSmith UI.
 
-## 9. Current status
-Code written, pytest passes with a mocked OpenAI stream. Supabase migration applied. Still to do: fill in `.env` files, run the app, two-user RLS test in the browser, confirm a LangSmith trace.
+**Scope:** Only `.txt` and `.md`, at most 5 MB. The embedding dimension is locked to `vector(768)` (changing it needs a migration and re-ingest). No deduplication (Module 3), metadata filtering (4), PDF/DOCX/HTML (5), hybrid search or reranking (6).

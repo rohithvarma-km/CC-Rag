@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import AppLayout from '@/components/AppLayout'
 import Chat from '@/pages/Chat'
+import Ingestion from '@/pages/Ingestion'
 import Login from '@/pages/Login'
 
 export default function App() {
@@ -20,7 +22,10 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={session ? <Navigate to="/" replace /> : <Login />} />
-        <Route path="/" element={session ? <Chat /> : <Navigate to="/login" replace />} />
+        <Route element={session ? <AppLayout /> : <Navigate to="/login" replace />}>
+          <Route path="/" element={<Chat />} />
+          <Route path="/ingestion" element={<Ingestion />} />
+        </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
