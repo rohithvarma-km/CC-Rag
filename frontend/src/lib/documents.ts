@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from './supabase'
-import { createDocument, deleteDocument, ingestDocument, listDocuments, type DocumentRow } from './api'
+import {
+  createDocument,
+  deleteDocument,
+  ingestDocument,
+  listDocuments,
+  type DocumentRow,
+  type UploadAction,
+} from './api'
 
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 const ALLOWED_EXT = ['.txt', '.md']
@@ -13,21 +20,34 @@ export function validateFile(file: File): string | null {
   return null
 }
 
-export async function uploadDocument(file: File): Promise<DocumentRow> {
+// SHA-256 of the file bytes as lowercase hex. Needs a secure context (https or localhost).
+export async function sha256Hex(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+export type UploadOutcome = { action: UploadAction; document: DocumentRow }
+
+export async function uploadDocument(file: File): Promise<UploadOutcome> {
   const problem = validateFile(file)
   if (problem) throw new Error(problem)
-  const doc = await createDocument(file.name, file.size)
+  const hash = await sha256Hex(file)
+  const { action, document: doc } = await createDocument(file.name, file.size, hash)
+  // Identical content already ingested (or in flight): nothing to upload or embed.
+  if (action === 'unchanged') return { action, document: doc }
   try {
     const { error } = await supabase.storage.from('documents').upload(doc.storage_path, file, {
       contentType: file.type || 'text/plain',
+      upsert: true, // updated/retry reuse the same storage object
     })
     if (error) throw new Error(`Upload failed: ${error.message}`)
     await ingestDocument(doc.id)
   } catch (e) {
-    await deleteDocument(doc.id).catch(() => {})
+    // Only remove a row we just created. An existing document keeps its row; a failed re-upload can be retried.
+    if (action === 'created') await deleteDocument(doc.id).catch(() => {})
     throw e
   }
-  return doc
+  return { action, document: doc }
 }
 
 const byNewest = (a: DocumentRow, b: DocumentRow) => b.created_at.localeCompare(a.created_at)

@@ -7,6 +7,7 @@ import { uploadDocument, useDocuments, validateFile } from '@/lib/documents'
 export default function Ingestion() {
   const { documents, loading, error: loadError, refetch } = useDocuments()
   const [errors, setErrors] = useState<string[]>([])
+  const [notices, setNotices] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
 
   async function onFiles(files: File[]) {
@@ -18,11 +19,16 @@ export default function Ingestion() {
       else ok.push(f)
     }
     setErrors(errs)
+    setNotices([])
     if (!ok.length) return
+    const notes: string[] = []
     setBusy(true)
     for (const f of ok) {
       try {
-        await uploadDocument(f)
+        const { action } = await uploadDocument(f)
+        if (action === 'unchanged') notes.push(`${f.name}: already ingested (unchanged), skipped`)
+        else if (action === 'updated') notes.push(`${f.name}: content changed, re-processing`)
+        setNotices([...notes])
       } catch (e) {
         errs.push(`${f.name}: ${e instanceof Error ? e.message : String(e)}`)
         setErrors([...errs])
@@ -64,6 +70,11 @@ export default function Ingestion() {
         {errors.length > 0 && (
           <ul role="alert" data-testid="upload-error" className="space-y-1 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             {errors.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+        )}
+        {notices.length > 0 && (
+          <ul role="status" data-testid="upload-notice" className="space-y-1 rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+            {notices.map((n, i) => <li key={i}>{n}</li>)}
           </ul>
         )}
         {loadError && <p className="text-sm text-destructive">{loadError}</p>}

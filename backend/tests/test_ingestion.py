@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -15,7 +16,7 @@ def make_db(**kw):
 
 
 def patch(monkeypatch, raw=b"hello world. " * 200, embed=None):
-    async def dl(path, token):
+    async def dl(path, token, **kw):
         return raw
 
     async def emb(texts, **k):
@@ -140,3 +141,72 @@ def test_claim_filter_and_none():
     row = ingestion.claim_document(db2, "d1")
     assert row["id"] == "d1"
     assert db2.writes[0] == ("documents", "update", {"status": "processing", "error": None})
+
+
+RAW = b"hello world. " * 200
+RAW_HASH = hashlib.sha256(RAW).hexdigest()
+
+
+def run_doc(db, doc):
+    asyncio.run(ingestion.run_ingestion(db, "tok", dict(doc)))
+
+
+def test_server_hash_is_stored(monkeypatch):
+    patch(monkeypatch, raw=RAW)
+    db = make_db()
+    run_doc(db, {**DOC, "content_hash": RAW_HASH})
+    d = db.tables["documents"][0]
+    assert d["status"] == "completed" and d["content_hash"] == RAW_HASH
+
+
+def test_legacy_doc_without_declared_hash_gets_one(monkeypatch):
+    patch(monkeypatch, raw=RAW)
+    db = make_db()
+    run_doc(db, {**DOC, "content_hash": None})
+    assert db.tables["documents"][0]["content_hash"] == RAW_HASH
+
+
+def test_hash_mismatch_fails_with_no_chunks(monkeypatch):
+    patch(monkeypatch, raw=RAW)
+    db = make_db(chunks=[{"document_id": "d1", "chunk_index": 0, "content": "old"}])
+    run_doc(db, {**DOC, "content_hash": "0" * 64})
+    d = db.tables["documents"][0]
+    assert d["status"] == "failed" and "hash" in d["error"]
+    assert db.tables["chunks"] == []
+    assert d.get("content_hash") != RAW_HASH
+
+
+def test_update_replaces_all_old_chunks(monkeypatch):
+    patch(monkeypatch, raw=RAW)
+    old = [{"document_id": "d1", "chunk_index": i, "content": f"old {i}"} for i in range(50)]
+    db = make_db(chunks=old)
+    run_doc(db, {**DOC, "content_hash": RAW_HASH})
+    chunks = db.tables["chunks"]
+    d = db.tables["documents"][0]
+    assert d["chunk_count"] == len(chunks) > 0
+    assert not any(c["content"].startswith("old") for c in chunks)
+    assert sorted(c["chunk_index"] for c in chunks) == list(range(len(chunks)))
+
+
+def test_failed_update_leaves_no_stale_vectors(monkeypatch):
+    async def boom(texts, **k):
+        raise ingestion.ProviderUnavailableError("down")
+
+    patch(monkeypatch, raw=RAW, embed=boom)
+    db = make_db(chunks=[{"document_id": "d1", "chunk_index": 0, "content": "old"}])
+    run_doc(db, {**DOC, "content_hash": RAW_HASH})
+    assert db.tables["documents"][0]["status"] == "failed"
+    assert db.tables["chunks"] == []
+
+
+def test_download_is_requested_for_the_declared_version(monkeypatch):
+    seen = {}
+
+    async def dl(path, token, **kw):
+        seen.update(kw)
+        return RAW
+
+    patch(monkeypatch, raw=RAW)
+    monkeypatch.setattr(ingestion.storage, "download", dl)
+    run_doc(make_db(), {**DOC, "content_hash": RAW_HASH})
+    assert seen == {"version": RAW_HASH}

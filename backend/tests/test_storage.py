@@ -64,3 +64,17 @@ def test_delete_404_tolerated():
 def test_delete_500_raises():
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(storage.delete("p", "t", transport=transport(500)))
+
+
+def test_download_with_version_busts_cache():
+    seen = []
+    asyncio.run(storage.download("u1/d1", "jwt", version="abc123", transport=transport(200, b"x", seen)))
+    r = seen[0]
+    assert str(r.url) == "https://proj.supabase.co/storage/v1/object/documents/u1/d1?v=abc123"
+    assert r.headers["cache-control"] == "no-cache"
+
+
+def test_download_without_version_is_unchanged():
+    seen = []
+    asyncio.run(storage.download("u1/d1", "jwt", transport=transport(200, b"x", seen)))
+    assert "?" not in str(seen[0].url) and "cache-control" not in seen[0].headers

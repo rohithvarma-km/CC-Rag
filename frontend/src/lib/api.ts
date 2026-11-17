@@ -14,6 +14,7 @@ export type DocumentRow = {
   chunk_count: number
   size_bytes: number
   storage_path: string
+  content_hash: string | null
   created_at: string
   updated_at: string
 }
@@ -35,8 +36,11 @@ export const deleteThread = (id: string) => req<void>(`/threads/${id}`, { method
 export const listMessages = (id: string) => req<Message[]>(`/threads/${id}/messages`)
 
 export const listDocuments = () => req<DocumentRow[]>('/documents')
-export const createDocument = (filename: string, size_bytes: number) =>
-  req<DocumentRow>('/documents', { method: 'POST', body: JSON.stringify({ filename, size_bytes }) })
+// What the record manager decided: new file, identical file (skip), failed/pending file (re-run), changed file (replace).
+export type UploadAction = 'created' | 'unchanged' | 'retry' | 'updated'
+export type CreateDocumentResult = { action: UploadAction; document: DocumentRow }
+export const createDocument = (filename: string, size_bytes: number, content_hash: string) =>
+  req<CreateDocumentResult>('/documents', { method: 'POST', body: JSON.stringify({ filename, size_bytes, content_hash }) })
 export const ingestDocument = (id: string) => req<void>(`/documents/${id}/ingest`, { method: 'POST' })
 export const deleteDocument = (id: string) => req<void>(`/documents/${id}`, { method: 'DELETE' })
 

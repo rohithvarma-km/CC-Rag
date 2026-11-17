@@ -48,6 +48,20 @@ Plan: `.agent/plans/2.byo-retrieval-memory.md`
 - [x] LangSmith trace structure verified (`chat_turn` with nested `embed_query`/`retrieve`/LLM spans; separate `ingest_document`)
 - [x] Fixed: `tests/test_embeddings.py` leaked `EMBEDDING_*_PREFIX` from the local `backend/.env` (Settings reads `.env` directly); the test fixture now pins the prefixes. pytest: 108 passed
 
+### Module 3: Record Manager  [x] Built and live-validated (2026-11-17); not yet committed
+Plan: `.agent/plans/3.record-manager.md`
+- [x] Migration `supabase/migrations/0003_documents_content_hash.sql` (`documents.content_hash`, unique `(user_id, filename)`) + `supabase/tests/0003_record_manager_check.sql` - **NOT yet applied** (run the pre-flight duplicate-filename query in the file first)
+- [x] Backend: `services/record_manager.py` (`decide`: created / unchanged / retry / updated / conflict), `POST /documents` now takes `content_hash` and returns `{action, document}` (200 for unchanged, 409 for changed content while processing, unique-violation race re-resolved), `run_ingestion` hashes the downloaded bytes, rejects a mismatch with the declared hash and stores the server hash
+- [x] Modified files are fully re-chunked and re-embedded (existing delete-first order kept: a failed update leaves no stale vectors); per-chunk diffing was considered and rejected
+- [x] Frontend: SHA-256 via Web Crypto before upload, unchanged files skip upload and embedding, storage upload uses upsert, a failed upload only deletes rows it created, Ingestion page shows "already ingested (unchanged)" / "content changed, re-processing"
+- [x] Tests: backend `pytest` 131 passed, 1 failed (`test_config.py::test_every_setting_in_env_example`, caused by the uncommitted removal of variables from `backend/.env.example`, not by Module 3); `npm run build` clean
+- [x] Migration 0003 applied; `0003_record_manager_check.sql` passed (unique index + RLS)
+- [x] Live E2E with Playwright + LangSmith (2026-11-17): full results in `.agent/plans/3.1.record-manager-test-plan.md`. Unchanged re-upload creates no row, no chunk changes and no `ingest_document` run; edited files keep the row id and replace every chunk; two-user isolation holds; races, retries and the 409 guard behave
+- [x] Bug found and fixed in testing: overwriting a storage object in place and re-ingesting within ~1 min read stale CDN bytes (the hash check failed the document safely). `storage.download` now takes `version=content_hash` (`?v=` + `Cache-Control: no-cache`); tests added; pytest 134 passed + the 1 known `.env.example` failure
+- Known, not Module 3: deleting a never-uploaded document returns 502 (`storage.delete` only treats 404 as missing; Supabase returns 400); LangSmith marks failed ingestions as success; pytest traces to the real LangSmith project
+- [ ] Delete test users `rlstest-a3@example.com` and `rlstest-b3@example.com` (Supabase -> Authentication -> Users); their data is already deleted
+- Deviations from plan: no backend storage-upsert test (uploads go straight from the browser, so only the frontend sets `upsert: true`); added a `conflict` action (409) when changed content arrives while the same document is `processing`
+
 ## Current status / next steps (2026-11-12)
 - Release **0.2** (Module 2) is committed and tagged. Built and live-validated end-to-end against Supabase + local Ollama.
-- **Next:** delete `rlstest-a2`/`rlstest-b2` users (Supabase -> Authentication -> Users), tune `RETRIEVAL_MIN_SIMILARITY`, then start Module 3 (record management / deduplication).
+- **Next:** delete `rlstest-a2`/`rlstest-b2` users (Supabase -> Authentication -> Users), tune `RETRIEVAL_MIN_SIMILARITY`, then commit Module 3.

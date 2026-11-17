@@ -105,4 +105,12 @@ LangSmith records one `chat_turn` trace per message with nested `embed_query`, `
 - Composer text and an in-flight stream are lost when navigating Chat -> Documents -> Chat.
 - The Documents page has no `<main>` landmark (a11y nit).
 
-**Scope:** Only `.txt` and `.md`, at most 5 MB. The embedding dimension is locked to `vector(768)` (changing it needs a migration and re-ingest). No deduplication (Module 3), metadata filtering (4), PDF/DOCX/HTML (5), hybrid search or reranking (6).
+**Scope:** Only `.txt` and `.md`, at most 5 MB. The embedding dimension is locked to `vector(768)` (changing it needs a migration and re-ingest). Deduplication is by filename plus SHA-256 content hash (Module 3, below). No metadata filtering (4), PDF/DOCX/HTML (5), hybrid search or reranking (6).
+
+## Module 3: Record manager
+A document's identity is `(user_id, filename)` (unique index); its version is the SHA-256 of the file bytes (`documents.content_hash`).
+- The browser hashes the file (Web Crypto) and sends it with `POST /documents`. `services/record_manager.decide` returns: `created` (new filename), `unchanged` (same hash, completed or processing: no row, no upload, no embedding), `retry` (same hash, failed or pending: row reset to pending), `updated` (new hash: same row and storage object, status pending), or `conflict` (409: new hash while the document is processing).
+- `run_ingestion` is authoritative: it hashes the downloaded bytes, fails the document if they differ from the declared hash, and stores the server-computed hash.
+- A changed document is fully re-chunked and re-embedded: old chunks are deleted first, so a failed update leaves the document empty and `failed`, never half-old. No per-chunk diffing.
+- Rows created before Module 3 have no hash, so the next upload of that filename is processed once.
+- Storage objects are overwritten in place on update, and the storage CDN can serve the previous bytes briefly, so ingestion downloads with `?v=<content_hash>` and `Cache-Control: no-cache`. The hash check is the safety net: stale bytes fail the document instead of being indexed.

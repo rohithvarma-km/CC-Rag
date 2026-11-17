@@ -74,7 +74,7 @@ Tool-calling caveat: retrieval works by the model calling a `search_documents` t
 
 ### 2. Supabase
 
-1. Create a Supabase project and run `supabase/migrations/0001_threads_messages.sql`, then `supabase/migrations/0002_documents_chunks_retrieval.sql` in the SQL editor.
+1. Create a Supabase project and run `supabase/migrations/0001_threads_messages.sql`, then `supabase/migrations/0002_documents_chunks_retrieval.sql`, then `supabase/migrations/0003_documents_content_hash.sql` in the SQL editor (read the pre-flight note at the top of 0003 first).
 2. **Apply 0002 BEFORE restarting the backend.** It is destructive: it drops `threads.openai_last_response_id` and `messages.openai_response_id` (Module 1 memory). The old backend breaks once they are gone, and the new backend breaks without the new tables. Order: stop services, migrate, update `.env`, start.
 3. 0002 creates `documents` and `chunks` (pgvector), the `match_chunks` function, a private `documents` Storage bucket, RLS policies on all of them, and enables Realtime on `documents`. It is idempotent.
 

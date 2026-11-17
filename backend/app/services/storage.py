@@ -20,9 +20,16 @@ def _headers(token: str) -> dict[str, str]:
     return {"apikey": get_settings().supabase_anon_key, "Authorization": f"Bearer {token}"}
 
 
-async def download(path: str, token: str, *, transport: httpx.AsyncBaseTransport | None = None) -> bytes:
+async def download(
+    path: str, token: str, *, version: str | None = None, transport: httpx.AsyncBaseTransport | None = None
+) -> bytes:
+    """Download an object. Objects are overwritten in place when a document changes, and the storage CDN can keep
+    serving the previous bytes for a short while, so callers pass `version` (the content hash): it makes the URL
+    unique per version and asks caches to revalidate."""
+    params = {"v": version} if version else None
+    headers = {**_headers(token), **({"Cache-Control": "no-cache"} if version else {})}
     async with httpx.AsyncClient(timeout=30, transport=transport) as c:
-        r = await c.get(_url(path), headers=_headers(token))
+        r = await c.get(_url(path), headers=headers, params=params)
     if r.status_code in (400, 404):  # Supabase Storage returns 400 or 404 for a missing object
         raise StorageNotFound(path)
     r.raise_for_status()

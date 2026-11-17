@@ -14,6 +14,7 @@ class ChatRequest(BaseModel):
 class DocumentCreate(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=0)
+    content_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$", description="SHA-256 of the file bytes, hex")
 
 
 class DocumentOut(BaseModel):
@@ -24,8 +25,16 @@ class DocumentOut(BaseModel):
     chunk_count: int = 0
     size_bytes: int = 0
     storage_path: str
+    content_hash: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class DocumentCreateOut(BaseModel):
+    """What POST /documents decided: created | unchanged | retry | updated."""
+
+    action: Literal["created", "unchanged", "retry", "updated"]
+    document: DocumentOut
 
 
 class Citation(BaseModel):

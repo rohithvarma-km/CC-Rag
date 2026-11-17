@@ -1,4 +1,5 @@
 """Document ingestion: download -> decode -> chunk -> embed -> store. Runs as a background task."""
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -68,9 +69,14 @@ async def run_ingestion(db, token: str, doc: dict) -> None:
     doc_id = doc["id"]
     try:
         s = get_settings()
-        raw = await storage.download(doc["storage_path"], token)
+        raw = await storage.download(doc["storage_path"], token, version=doc.get("content_hash"))
         if len(raw) > s.max_upload_bytes:
             raise IngestionError(f"File exceeds the {s.max_upload_bytes} byte limit")
+        # The server is the source of truth for the content hash: verify what the client declared.
+        content_hash = hashlib.sha256(raw).hexdigest()
+        declared = doc.get("content_hash")
+        if declared and declared != content_hash:
+            raise IngestionError("Uploaded file does not match its recorded hash; please upload it again")
         text = decode_text(raw)
         db.table("chunks").delete().eq("document_id", doc_id).execute()
         chunks = chunk_text(text, s.chunk_size, s.chunk_overlap)
@@ -90,7 +96,7 @@ async def run_ingestion(db, token: str, doc: dict) -> None:
         for i in range(0, len(rows), INSERT_BATCH):
             db.table("chunks").insert(rows[i : i + INSERT_BATCH]).execute()
         db.table("documents").update(
-            {"status": "completed", "error": None, "chunk_count": len(rows)}
+            {"status": "completed", "error": None, "chunk_count": len(rows), "content_hash": content_hash}
         ).eq("id", doc_id).execute()
     except Exception as e:  # noqa: BLE001 - background task must never raise
         log.exception("Ingestion failed for document %s", doc_id)
