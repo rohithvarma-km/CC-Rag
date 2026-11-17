@@ -48,7 +48,7 @@ Plan: `.agent/plans/2.byo-retrieval-memory.md`
 - [x] LangSmith trace structure verified (`chat_turn` with nested `embed_query`/`retrieve`/LLM spans; separate `ingest_document`)
 - [x] Fixed: `tests/test_embeddings.py` leaked `EMBEDDING_*_PREFIX` from the local `backend/.env` (Settings reads `.env` directly); the test fixture now pins the prefixes. pytest: 108 passed
 
-### Module 3: Record Manager  [x] Built and live-validated (2026-11-17); not yet committed
+### Module 3: Record Manager  [x] Released as 0.3 (2026-11-17, commit `5bf669b`); test-user cleanup remains
 Plan: `.agent/plans/3.record-manager.md`
 - [x] Migration `supabase/migrations/0003_documents_content_hash.sql` (`documents.content_hash`, unique `(user_id, filename)`) + `supabase/tests/0003_record_manager_check.sql` - **NOT yet applied** (run the pre-flight duplicate-filename query in the file first)
 - [x] Backend: `services/record_manager.py` (`decide`: created / unchanged / retry / updated / conflict), `POST /documents` now takes `content_hash` and returns `{action, document}` (200 for unchanged, 409 for changed content while processing, unique-violation race re-resolved), `run_ingestion` hashes the downloaded bytes, rejects a mismatch with the declared hash and stores the server hash
@@ -62,6 +62,14 @@ Plan: `.agent/plans/3.record-manager.md`
 - [ ] Delete test users `rlstest-a3@example.com` and `rlstest-b3@example.com` (Supabase -> Authentication -> Users); their data is already deleted
 - Deviations from plan: no backend storage-upsert test (uploads go straight from the browser, so only the frontend sets `upsert: true`); added a `conflict` action (409) when changed content arrives while the same document is `processing`
 
-## Current status / next steps (2026-11-12)
-- Release **0.2** (Module 2) is committed and tagged. Built and live-validated end-to-end against Supabase + local Ollama.
-- **Next:** delete `rlstest-a2`/`rlstest-b2` users (Supabase -> Authentication -> Users), tune `RETRIEVAL_MIN_SIMILARITY`, then commit Module 3.
+### Module 3.5: Model Settings + Roles  [ ] Not started
+Planned between Module 3 and Module 4 (see PRD.md, "Module 3.5"). Admin-only settings page for the chat LLM, embedding model and chunking/embedding parameters; regular users get a read-only view; the embedding model is locked once chunks exist. Plan to be saved as `.agent/plans/3.5.model-settings-roles.md`. Keep migrations additive so the code can still roll back to `0.3`.
+- [ ] Write the plan (including what happens to existing documents when chunking parameters change)
+- [ ] Build, validate with Playwright (two roles), tag (suggested `0.3.5`)
+
+## Current status / next steps (2026-11-17)
+- Release **0.3** (Module 3) is committed and tagged locally (not pushed). Built and live-validated end-to-end against Supabase + local Ollama + LangSmith.
+- Uncommitted on purpose: `PRD.md` (Module 3 decisions + Module 3.5 section), `backend/.env.example` (trimmed; this is why `test_config.py::test_every_setting_in_env_example` fails), `context.md`, and these doc updates.
+- **Next:** plan Module 3.5, then Module 4 (metadata extraction).
+- Cleanup still to do: delete test users `rlstest-a2`, `rlstest-b2`, `rlstest-a3`, `rlstest-b3` (Supabase -> Authentication -> Users); tune `RETRIEVAL_MIN_SIMILARITY`; decide whether the `.env.example` trim was intentional.
+- Known issues, not yet scheduled: deleting a never-uploaded document returns 502 (`services/storage.delete` only treats 404 as missing; Supabase returns 400); LangSmith shows failed ingestions as `success`; `pytest` sends `ingest_document` traces (`document_id=d1`) to the real LangSmith project.

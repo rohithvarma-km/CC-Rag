@@ -44,7 +44,7 @@ Technically-minded people who want to build production RAG systems using AI codi
 - ❌ Billing/payments
 - ❌ Data connectors (Google Drive, SFTP, APIs, webhooks)
 - ❌ Scheduled/automated ingestion
-- ❌ Admin UI (config via env vars)
+- ❌ Admin UI (config via env vars) - except the admin-only model/parameter settings page planned for Module 3.5
 
 ## Stack
 
@@ -107,9 +107,41 @@ There is no right answer—this is a real architectural choice you'll face in bu
 
 ## Module 3: Record Manager
 
+**Status:** Released as `0.3` (2026-11-17).
+
 **Build:** Content hashing, detect changes, only process what's new/modified
 
 **Learn:** Why naive ingestion duplicates, incremental updates
+
+**Decisions made:**
+- **Identity and version:** a document is identified by `(user, filename)`; its version is the SHA-256 of the file bytes.
+- **Outcomes of an upload:** new filename → created; same hash → skipped with an "already ingested (unchanged)" notice (no upload, no embedding calls); same hash after a failure → retried on the same row; new hash → the same row is updated in place; new hash while the document is processing → rejected with 409.
+- **Re-processing granularity:** a changed file is fully re-chunked and re-embedded, with the old chunks deleted first, so a failed update never leaves a half-old document. Per-chunk hashing and partial re-embedding were considered and rejected: the added complexity (atomic SQL swap, index collisions, embedding-config invalidation) outweighed the savings.
+- **Trust:** the browser hashes the file, but the server re-hashes the stored bytes and fails the document on a mismatch.
+- **Storage caching:** overwriting a stored file in place can serve stale bytes from the storage CDN for about a minute, so ingestion downloads a versioned URL.
+
+---
+
+## Module 3.5: Model Settings + Roles
+
+**Status:** Not started. Sits between Module 3 and Module 4. It will be planned in `.agent/plans/3.5.model-settings-roles.md`.
+
+**Build:** A settings page reachable from the user menu at the bottom of the sidebar, plus a minimal roles system.
+- **Admins** can change the chat LLM (local or online provider), the embedding model, and the chunking/embedding parameters.
+- **Regular users** get a read-only view; they cannot change anything.
+- **Locking:** the embedding model, dimension and prefixes cannot be changed once chunks exist.
+
+**Learn:** Roles with Row-Level Security, runtime configuration versus env vars, what changing an embedding model means for already-indexed data.
+
+**Scope exception:** this deliberately supersedes the "no admin UI / config via env vars" rule for model and parameter settings only. Everything else stays env-configured.
+
+**Open decisions for the plan:**
+- API keys for online providers stay in env vars (the backend has no service-role key, so non-admin chats could not read keys stored in the database).
+- The first admin is set once via SQL.
+- How settings are stored and read per request (and how chat and ingestion pick them up).
+- What happens to existing documents when chunking parameters change (mark stale and offer re-ingest, or only apply to new uploads).
+
+**Safety:** keep the migrations additive (new tables and columns only) so the code can be rolled back to `0.3` without breaking the database. Tag the result `0.3.5`.
 
 ---
 

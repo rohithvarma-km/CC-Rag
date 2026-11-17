@@ -1,6 +1,6 @@
-# Module 2: How It Works (Plain English)
+# How It Works (Plain English)
 
-_Release 0.2. Covers BYO retrieval + memory: own ingestion pipeline, pgvector search, tool-calling chat over stateless completions._
+_Release 0.3. Covers BYO retrieval + memory (Module 2) and the record manager (Module 3): own ingestion pipeline, pgvector search, tool-calling chat over stateless completions, content hashing so unchanged files are skipped._
 
 ## 1. The idea in one paragraph
 A chat website where you sign up, log in, upload your own text documents, and talk to an AI that looks things up in them (RAG: Retrieval-Augmented Generation). We own the whole pipeline: file storage, chunking, embeddings, vector search, and the conversation memory. The model is reached through the standard OpenAI-compatible Chat Completions API (default: local Ollama), so you can swap providers with environment variables. Every user's documents and chats are private to them (Row-Level Security). Every turn is traced in LangSmith.
@@ -15,7 +15,7 @@ A chat website where you sign up, log in, upload your own text documents, and ta
    |  every API call: "Authorization: Bearer <JWT>"
    v
  Backend (Python FastAPI)  -- acts AS THE USER (their JWT), so RLS applies everywhere
-   |  /documents      create row, trigger ingestion, delete
+   |  /documents      record-manager decision (created/unchanged/retry/updated), trigger ingestion, delete
    |  /threads        threads + messages (with citations)
    |  /threads/{id}/chat   tool-calling loop, streamed over SSE
    v
@@ -31,11 +31,11 @@ Rules: no LangChain/LangGraph (raw SDK calls), RLS on every table, chat streamed
 
 ## 3. Ingestion: from file to searchable chunks
 
-1. **Create.** The browser checks the file (`.txt` / `.md`, at most 5 MB) and calls `POST /documents {filename, size_bytes}`. The backend validates again and inserts a `documents` row with status `pending` and `storage_path = {user_id}/{document_id}`.
-2. **Upload.** The browser uploads the file straight to the private `documents` bucket in Supabase Storage (storage policies only allow your own `{user_id}/` folder). If the upload fails the browser calls `DELETE /documents/{id}`.
+1. **Create.** The browser checks the file (`.txt` / `.md`, at most 5 MB), computes its SHA-256 and calls `POST /documents {filename, size_bytes, content_hash}`. The backend validates again and the record manager decides what the upload means (see the Module 3 section below). A new filename inserts a `documents` row with status `pending` and `storage_path = {user_id}/{document_id}`; an identical file returns `unchanged` and the browser stops here.
+2. **Upload.** The browser uploads the file straight to the private `documents` bucket in Supabase Storage (storage policies only allow your own `{user_id}/` folder), overwriting the object when a document is updated. If the upload fails for a document it just created, the browser calls `DELETE /documents/{id}`; an existing document keeps its row and can be retried.
 3. **Ingest.** `POST /documents/{id}/ingest` atomically claims the document and returns 202. The work then runs as a FastAPI background task using the user's JWT (no service-role key).
-4. **Process.** Download from Storage, decode as UTF-8 (BOM tolerated, NUL bytes stripped, empty file is an error), delete any old chunks, split into chunks, embed them in batches, insert into `chunks` in batches of 100.
-5. **Finish.** Status becomes `completed` with `chunk_count`. Any error deletes that document's chunks and sets `failed` with a short, user-safe `error` message (for example "Cannot reach model provider at ...").
+4. **Process.** Download from Storage (versioned URL), verify the bytes against the declared hash, decode as UTF-8 (BOM tolerated, NUL bytes stripped, empty file is an error), delete any old chunks, split into chunks, embed them in batches, insert into `chunks` in batches of 100.
+5. **Finish.** Status becomes `completed` with `chunk_count` and the server-computed `content_hash`. Any error deletes that document's chunks and sets `failed` with a short, user-safe `error` message (for example "Cannot reach model provider at ...").
 
 **State machine:** `pending -> processing -> completed | failed`. `failed -> processing` on Retry. A document stuck in `processing` for more than 10 minutes (for example the server restarted) can be claimed again. A fresh `processing` document cannot, so double clicks return 409.
 
@@ -80,7 +80,7 @@ For each `POST /threads/{id}/chat`:
 | Accounts, passwords, sessions | Supabase Auth |
 | Original files | Supabase Storage, private bucket `documents`, path `{user_id}/{document_id}` |
 | Chunk text and 768-dim embeddings | Supabase Postgres: `chunks` (pgvector) |
-| Document metadata and ingestion status | Supabase Postgres: `documents` |
+| Document metadata, ingestion status and content hash | Supabase Postgres: `documents` (unique per `(user_id, filename)`) |
 | Threads, messages, citations (also the model's memory) | Supabase Postgres: `threads`, `messages` |
 | Traces / monitoring | LangSmith |
 | Secrets (API keys) | `.env` files, never committed |
@@ -98,12 +98,14 @@ Memory is entirely ours. Every message is stored in `messages`; each turn we res
 LangSmith records one `chat_turn` trace per message with nested `embed_query`, `retrieve`, `execute_tool` and the LLM calls (tool calls visible), tagged with `user_id` and `thread_id`. Ingestion is a separate `ingest_document` trace. This structure was verified in the LangSmith UI. Metadata holds ids only, but the LLM and retrieval spans contain prompt and chunk text.
 
 ## 10. Limits and what comes next
-**Known limitations in 0.2:**
+**Known limitations in 0.3:**
 - Cold start: Ollama unloads models after 5 minutes idle, so the first turn takes about 11-12 s (set `OLLAMA_KEEP_ALIVE`); warm turns take about 2-6 s.
 - The assistant refuses general-knowledge questions by design (system prompt in `services/agent.py`).
 - `RETRIEVAL_MIN_SIMILARITY` (0.25) is not yet tuned; sample scores on real documents were 0.50-0.59.
 - Composer text and an in-flight stream are lost when navigating Chat -> Documents -> Chat.
 - The Documents page has no `<main>` landmark (a11y nit).
+- Deleting a document whose file was never uploaded returns 502 and leaves the row (`services/storage.delete` only treats 404 as missing; Supabase returns 400 for a missing object).
+- LangSmith shows failed ingestions as `success` because `run_ingestion` catches its own errors; `pytest` sends `ingest_document` traces to the real project.
 
 **Scope:** Only `.txt` and `.md`, at most 5 MB. The embedding dimension is locked to `vector(768)` (changing it needs a migration and re-ingest). Deduplication is by filename plus SHA-256 content hash (Module 3, below). No metadata filtering (4), PDF/DOCX/HTML (5), hybrid search or reranking (6).
 
@@ -114,3 +116,9 @@ A document's identity is `(user_id, filename)` (unique index); its version is th
 - A changed document is fully re-chunked and re-embedded: old chunks are deleted first, so a failed update leaves the document empty and `failed`, never half-old. No per-chunk diffing.
 - Rows created before Module 3 have no hash, so the next upload of that filename is processed once.
 - Storage objects are overwritten in place on update, and the storage CDN can serve the previous bytes briefly, so ingestion downloads with `?v=<content_hash>` and `Cache-Control: no-cache`. The hash check is the safety net: stale bytes fail the document instead of being indexed.
+
+**Validated (2026-11-17):** an identical re-upload creates no row, no chunk changes and no `ingest_document` trace; an edited file keeps its row id and replaces every chunk; two users with the same filename and bytes get independent rows; concurrent identical creates produce one row; changed content during processing gets 409; a quick edit-and-re-upload no longer reads stale bytes. Details: `.agent/plans/3.1.record-manager-test-plan.md`.
+
+## What comes next
+**Module 3.5 (planned): model settings + roles.** An admin-only settings page for the chat model, embedding model and chunking/embedding parameters, with a read-only view for regular users and the embedding model locked once chunks exist. It will need a roles table, admin checks in the API and RLS, and a way for chat and ingestion to read settings per request. Migrations will be additive so the code can still roll back to 0.3. See `PRD.md`.
+**Module 4:** metadata extraction and filtered retrieval.
